@@ -296,8 +296,11 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     this.assistMenu.appendTo(menuUl);
 
     // settings context menu
-    const settingsMenuDiv = document.createElement('div');
-    host.appendChild(settingsMenuDiv);
+    // Use a <ul> host on document.body (same reason as the assist menu above
+    // — Syncfusion ContextMenu expects <ul>, and body-level avoids clipping).
+    const settingsMenuUl = document.createElement('ul');
+    settingsMenuUl.id = 'ai-settings-context-menu';
+    document.body.appendChild(settingsMenuUl);
     this.settingsMenu = new ContextMenu({
       cssClass: 'ai-settings-menu',
       items: this.settingsMenuItems(),
@@ -305,7 +308,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       beforeItemRender: (args: any) => this.onSettingsBeforeItemRender(args),
       select: (args: MenuEventArgs) => this.zone.run(() => this.onSettingsMenuSelect(args))
     } as any);
-    this.settingsMenu.appendTo(settingsMenuDiv);
+    this.settingsMenu.appendTo(settingsMenuUl);
 
     // spinner container inside host for the smart dialog
     const spinner = document.createElement('div');

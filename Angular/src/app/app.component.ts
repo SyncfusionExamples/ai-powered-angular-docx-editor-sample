@@ -125,10 +125,7 @@ export class AppComponent implements OnInit, OnDestroy {
       (checked: boolean) => this.zone.run(() => this.setIsAIEnabled(checked))
     );
     this.onLoadDefault();
-    const spellChecker = editor.spellChecker;
-    spellChecker.languageID = 1033;
-    spellChecker.removeUnderline = false;
-    spellChecker.allowSpellCheckAndSuggestion = true;
+    
     window.addEventListener('resize', this.resizeHandler);
   }
 
