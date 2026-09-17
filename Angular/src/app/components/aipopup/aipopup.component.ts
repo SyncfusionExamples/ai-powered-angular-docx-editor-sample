@@ -127,7 +127,8 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
         this.fabChatVisible = false;
       } else {
         this.fabAssistVisible = true;
-        this.fabChatVisible = !this.chatOpen;
+        // Chat FAB is hidden from the sample — kept in code but not shown.
+        this.fabChatVisible = false;
       }
       if (this.assistFab) {
         this.assistFab.visible = this.fabAssistVisible;
@@ -139,9 +140,9 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       }
     }
     if (changes['chatOpen'] && this.chatFab) {
-      this.fabChatVisible = this.isAIEnabled ? !this.chatOpen : false;
-      this.chatFab.visible = this.fabChatVisible;
-      if (!this.chatOpen) requestAnimationFrame(() => this.positionChatFabByHelper());
+      // Chat FAB is hidden from the sample — keep it always invisible.
+      this.fabChatVisible = false;
+      this.chatFab.visible = false;
     }
     if (changes['assistInitialPos'] && this.assistInitialPos) {
       this.assistBtn = {
@@ -153,6 +154,17 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       };
       if (!this.isAIEnabled) { this.fabAssistVisible = false; this.fabChatVisible = false; }
       this.updateFabPosition();
+    }
+    // React re-runs its selectionChange useEffect whenever editorRef changes.
+    // The viewer polling may find #documentEditorDiv before the parent's
+    // @ViewChild('container') resolves, so editorRef can be undefined the
+    // first time onViewerHostChanged runs. Reset the flag so the polling
+    // interval can re-install the hook once documentEditor is available.
+    // Defer to avoid NG0100 (ExpressionChangedAfterItHasBeenCheckedError)
+    // when containerRef changes from undefined to the component instance.
+    if (changes['editorRef']) {
+      this.selectionChangeHooked = false;
+      setTimeout(() => this.hookSelectionChange(), 0);
     }
   }
 
@@ -261,13 +273,17 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     this.stopDialog.appendTo(stopDiv);
 
     // assist context menu (Rephrase/Translate/Grammar)
-    // Attach the menu's host to document.body (not inside #ai-assist) so the
-    // popup renders at body level — matching the React ContextMenuComponent
-    // behaviour and avoiding coordinate-space issues with position:fixed
-    // parents / e-hide siblings.
-    const menuDiv = document.createElement('div');
-    document.body.appendChild(menuDiv);
-    this.assistMenuHost = menuDiv;
+    // React renders <ContextMenuComponent> inside #ai-assist which is in the
+    // normal document flow.  In Angular we create it imperatively; attach to
+    // document.body so the popup isn't clipped by position:fixed / e-hide
+    // parents.  Use a <ul> element — Syncfusion ContextMenu expects a <ul>
+    // host (its moverHandler reads element.id and li references that are null
+    // when created on a <div>, causing the "Cannot read properties of null
+    // (reading 'id')" error).
+    const menuUl = document.createElement('ul');
+    menuUl.id = 'ai-assist-context-menu';
+    document.body.appendChild(menuUl);
+    this.assistMenuHost = menuUl;
     this.assistMenu = new ContextMenu({
       cssClass: 'ai-smart-menu',
       items: [
@@ -277,12 +293,14 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       ],
       select: (args: MenuEventArgs) => this.zone.run(() => this.onMenuSelect(args))
     });
-    this.assistMenu.appendTo(menuDiv);
-    console.log('[AIPopup] assist ContextMenu created', { menu: this.assistMenu, hasOpen: typeof (this.assistMenu as any).open, element: this.assistMenu?.element, hostParent: menuDiv.parentNode === document.body ? 'body' : 'other' });
+    this.assistMenu.appendTo(menuUl);
 
     // settings context menu
-    const settingsMenuDiv = document.createElement('div');
-    host.appendChild(settingsMenuDiv);
+    // Use a <ul> host on document.body (same reason as the assist menu above
+    // — Syncfusion ContextMenu expects <ul>, and body-level avoids clipping).
+    const settingsMenuUl = document.createElement('ul');
+    settingsMenuUl.id = 'ai-settings-context-menu';
+    document.body.appendChild(settingsMenuUl);
     this.settingsMenu = new ContextMenu({
       cssClass: 'ai-settings-menu',
       items: this.settingsMenuItems(),
@@ -290,7 +308,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       beforeItemRender: (args: any) => this.onSettingsBeforeItemRender(args),
       select: (args: MenuEventArgs) => this.zone.run(() => this.onSettingsMenuSelect(args))
     } as any);
-    this.settingsMenu.appendTo(settingsMenuDiv);
+    this.settingsMenu.appendTo(settingsMenuUl);
 
     // spinner container inside host for the smart dialog
     const spinner = document.createElement('div');
@@ -404,13 +422,9 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     const nextBtn = dlgEl.querySelector('.smart-next-btn');
     if (prevBtn) prevBtn.addEventListener('click', () => this.zone.run(() => this.prevSuggestion()));
     if (nextBtn) nextBtn.addEventListener('click', () => this.zone.run(() => this.nextSuggestion()));
-    // footer buttons
-    const replaceBtn = dlgEl.querySelector('.smart-replace-btn');
-    const regenBtn = dlgEl.querySelector('.smart-regenerate-btn');
-    const cancelBtn = dlgEl.querySelector('.smart-cancel-btn');
-    if (replaceBtn) replaceBtn.addEventListener('click', () => this.zone.run(() => this.onReplace()));
-    if (regenBtn) regenBtn.addEventListener('click', () => this.zone.run(() => this.runTask(this.popupType, true)));
-    if (cancelBtn) cancelBtn.addEventListener('click', () => this.zone.run(() => this.smartVisible = false));
+    // Footer buttons (Replace / Regenerate / Cancel) are wired in
+    // refreshSmartDialogContent() because the Dialog renders the footerTemplate
+    // lazily — the footer DOM does not exist until the dialog is shown.
   }
 
   // ---------- HTML templates ----------
@@ -514,12 +528,52 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     if (inEl) inEl.innerHTML = this.inHtml;
     const outEl = dlgEl.querySelector('.smart-out-html') as HTMLElement;
     if (outEl) outEl.innerHTML = this.outHtml;
+
+    // Wire footer buttons here — the Dialog renders footerTemplate lazily, so
+    // the footer DOM only exists after the dialog has been shown.  React wires
+    // these via the smartFooterTemplate callback (which re-renders each time);
+    // we re-wire here on every refresh to keep handlers bound to current state.
+    this.wireSmartFooterButtons(dlgEl);
+  }
+
+  /** Wire the Replace / Regenerate / Cancel footer buttons in the smart dialog.
+   *  Mirrors React's smartFooterTemplate callback behaviour. */
+  private wireSmartFooterButtons(dlgEl: HTMLElement): void {
+    const replaceBtn = dlgEl.querySelector('.smart-replace-btn') as HTMLElement;
+    if (replaceBtn && !replaceBtn.dataset.wired) {
+      replaceBtn.dataset.wired = '1';
+      replaceBtn.addEventListener('click', () => this.zone.run(() => this.onReplace()));
+    }
+    const regenBtn = dlgEl.querySelector('.smart-regenerate-btn') as HTMLElement;
+    if (regenBtn && !regenBtn.dataset.wired) {
+      regenBtn.dataset.wired = '1';
+      // Mirror React: show spinner, then regenerate with a short delay so the
+      // spinner is visible before the async AI call begins.
+      regenBtn.addEventListener('click', () => this.zone.run(() => {
+        const sc = document.getElementById('spinner-container');
+        if (sc) showSpinner(sc);
+        setTimeout(() => this.runTask(this.popupType, true), 10);
+      }));
+    }
+    const cancelBtn = dlgEl.querySelector('.smart-cancel-btn') as HTMLElement;
+    if (cancelBtn && !cancelBtn.dataset.wired) {
+      cancelBtn.dataset.wired = '1';
+      cancelBtn.addEventListener('click', () => this.zone.run(() => {
+        this.smartVisible = false;
+        this.smartDialog.hide();
+      }));
+    }
   }
 
   // ---------- helpers ----------
   private getSelectionText(): string {
     try {
-      return (this.editorRef?.documentEditor?.selection?.getHtmlContent() || '').trim();
+      const html = (this.editorRef?.documentEditor?.selection?.getHtmlContent() || '').trim();
+      // Syncfusion returns an empty <span style=...></span> when the selection
+      // is just a blinking cursor with no text.  Strip tags and check for
+      // actual text content so we don't mistake "cursor only" for a selection.
+      const plain = (html || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      return plain ? html : '';
     } catch { return ''; }
   }
 
@@ -1001,6 +1055,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
   private viewerPickInterval: any;
   private viewerTracked = false;
   private mouseTracking = false;
+  private selectionChangeHooked = false;
 
   private startViewerPick(): void {
     const pick = () => {
@@ -1008,6 +1063,15 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       if (el && el !== this.viewerHost) {
         this.viewerHost = el;
         this.onViewerHostChanged(el);
+      }
+      // The editorRef (DocumentEditorContainerComponent) is set early, but its
+      // internal documentEditor is only created after the container's
+      // 'created' event. Keep trying until documentEditor is available, then
+      // install the selectionChange hook. React achieves this via a useEffect
+      // with dependency [editorRef, viewerHost] that re-runs when either
+      // changes; Angular has no equivalent re-trigger, so we poll here.
+      if (this.editorRef?.documentEditor && !this.selectionChangeHooked) {
+        this.hookSelectionChange();
       }
     };
     pick();
@@ -1020,14 +1084,10 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     // Position the assist FAB initially once the viewer is available.
     this.positionAssistFabInitial();
 
-    // Hook the underlying editor's selectionChange to keep the FAB aligned.
-    try {
-      const ed = this.editorRef?.documentEditor;
-      console.log('[AIPopup] editor documentEditor =', ed, 'has selectionChange =', !!ed?.selectionChange);
-      if (ed && ed.selectionChange) {
-        ed.selectionChange = () => this.zone.run(() => this.onSelectionChange());
-      }
-    } catch {}
+    // Install the selectionChange hook (also re-installed from ngOnChanges
+    // when editorRef resolves). React assigns unconditionally — no guard on
+    // ed.selectionChange being already defined.
+    this.hookSelectionChange();
 
     if (this.viewerTracked) { console.log('[AIPopup] viewer already tracked, skipping listener attach'); return; }
     this.viewerTracked = true;
@@ -1036,6 +1096,20 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     el.addEventListener('mousedown', (e: MouseEvent) => this.zone.runOutsideAngular(() => this.onViewerMouseDown(e)), false);
     el.addEventListener('mouseup', (e: MouseEvent) => this.zone.runOutsideAngular(() => this.onViewerMouseUp(e)), false);
     console.log('[AIPopup] attached mousedown/mouseup on viewer');
+  }
+
+  /** Install (or re-install) the editor selectionChange hook so the FAB
+   *  follows the cursor. Mirrors React's useEffect([editorRef, viewerHost]).
+   *  Safe to call repeatedly — React assigns unconditionally (no guard). */
+  private hookSelectionChange(): void {
+    try {
+      const ed = this.editorRef?.documentEditor;
+      if (ed) {
+        ed.selectionChange = () => this.zone.run(() => this.onSelectionChange());
+        this.selectionChangeHooked = true;
+        console.log('[AIPopup] selectionChange hook installed');
+      }
+    } catch {}
   }
 
   private onSelectionChange(): void {
