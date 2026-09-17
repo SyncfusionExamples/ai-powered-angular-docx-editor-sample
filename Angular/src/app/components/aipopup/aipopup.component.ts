@@ -418,13 +418,9 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     const nextBtn = dlgEl.querySelector('.smart-next-btn');
     if (prevBtn) prevBtn.addEventListener('click', () => this.zone.run(() => this.prevSuggestion()));
     if (nextBtn) nextBtn.addEventListener('click', () => this.zone.run(() => this.nextSuggestion()));
-    // footer buttons
-    const replaceBtn = dlgEl.querySelector('.smart-replace-btn');
-    const regenBtn = dlgEl.querySelector('.smart-regenerate-btn');
-    const cancelBtn = dlgEl.querySelector('.smart-cancel-btn');
-    if (replaceBtn) replaceBtn.addEventListener('click', () => this.zone.run(() => this.onReplace()));
-    if (regenBtn) regenBtn.addEventListener('click', () => this.zone.run(() => this.runTask(this.popupType, true)));
-    if (cancelBtn) cancelBtn.addEventListener('click', () => this.zone.run(() => this.smartVisible = false));
+    // Footer buttons (Replace / Regenerate / Cancel) are wired in
+    // refreshSmartDialogContent() because the Dialog renders the footerTemplate
+    // lazily — the footer DOM does not exist until the dialog is shown.
   }
 
   // ---------- HTML templates ----------
@@ -528,6 +524,41 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     if (inEl) inEl.innerHTML = this.inHtml;
     const outEl = dlgEl.querySelector('.smart-out-html') as HTMLElement;
     if (outEl) outEl.innerHTML = this.outHtml;
+
+    // Wire footer buttons here — the Dialog renders footerTemplate lazily, so
+    // the footer DOM only exists after the dialog has been shown.  React wires
+    // these via the smartFooterTemplate callback (which re-renders each time);
+    // we re-wire here on every refresh to keep handlers bound to current state.
+    this.wireSmartFooterButtons(dlgEl);
+  }
+
+  /** Wire the Replace / Regenerate / Cancel footer buttons in the smart dialog.
+   *  Mirrors React's smartFooterTemplate callback behaviour. */
+  private wireSmartFooterButtons(dlgEl: HTMLElement): void {
+    const replaceBtn = dlgEl.querySelector('.smart-replace-btn') as HTMLElement;
+    if (replaceBtn && !replaceBtn.dataset.wired) {
+      replaceBtn.dataset.wired = '1';
+      replaceBtn.addEventListener('click', () => this.zone.run(() => this.onReplace()));
+    }
+    const regenBtn = dlgEl.querySelector('.smart-regenerate-btn') as HTMLElement;
+    if (regenBtn && !regenBtn.dataset.wired) {
+      regenBtn.dataset.wired = '1';
+      // Mirror React: show spinner, then regenerate with a short delay so the
+      // spinner is visible before the async AI call begins.
+      regenBtn.addEventListener('click', () => this.zone.run(() => {
+        const sc = document.getElementById('spinner-container');
+        if (sc) showSpinner(sc);
+        setTimeout(() => this.runTask(this.popupType, true), 10);
+      }));
+    }
+    const cancelBtn = dlgEl.querySelector('.smart-cancel-btn') as HTMLElement;
+    if (cancelBtn && !cancelBtn.dataset.wired) {
+      cancelBtn.dataset.wired = '1';
+      cancelBtn.addEventListener('click', () => this.zone.run(() => {
+        this.smartVisible = false;
+        this.smartDialog.hide();
+      }));
+    }
   }
 
   // ---------- helpers ----------
