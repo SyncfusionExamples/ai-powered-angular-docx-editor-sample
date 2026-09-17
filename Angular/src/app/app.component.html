@@ -1,0 +1,110 @@
+<div class="control-pane">
+  <div class="control-section row uploadpreview">
+    <div class="col-lg-9">
+      <ng-container *ngIf="!initialized; else editorTemplate">
+        <div class="uploader-page">
+          <div class="upload-wrapper">
+            <ejs-uploader
+              #uploader
+              id="fileUpload"
+              locale="en-US"
+              [allowedExtensions]="'.doc,.docx,.rtf'"
+              [multiple]="false"
+              [showFileList]="false"
+              [autoUpload]="false"
+              [buttons]="{ browse: 'Upload a File' }"
+              [asyncSettings]="{ saveUrl: UPLOADER_SAVE_URL, removeUrl: UPLOADER_REMOVE_URL }"
+              (selected)="onFileSelected($event)"
+              (created)="onUploaderCreated()"
+            ></ejs-uploader>
+          </div>
+          <div class="create-new-button-section">
+            <button
+              ejs-button
+              cssClass="create-new-button e-primary"
+              iconCss="e-btn-sb-icons e-new-icons e-icons e-plus"
+              (click)="openNewDocument()"
+            >
+              Create New Document
+            </button>
+          </div>
+        </div>
+      </ng-container>
+
+      <ng-template #editorTemplate>
+        <div class="editor-container" id="main-container" style="position: relative;">
+          <div class="title-bar-section">
+            <div id="documenteditor_titlebar" class="e-de-ctn-title"></div>
+          </div>
+          <div id="document-editor-page">
+            <div
+              id="documentEditorDiv"
+              class="document-editor-container"
+              [style.height]="'calc(100vh - 53px)'"
+              [style.width]="openChat ? '65%' : '100%'"
+              style="float: left;"
+            >
+              <ejs-documenteditorcontainer
+                #container
+                id="document-editor"
+                height="100%"
+                [serviceUrl]="SERVICE_URL"
+                [enableToolbar]="true"
+                toolbarMode="Ribbon"
+                [enableSpellCheck]="true"
+                (created)="onContainerCreated()"
+              ></ejs-documenteditorcontainer>
+
+              <app-aipopup
+                [editorRef]="containerRef"
+                [isAIEnabled]="isAIEnabled"
+                [chatOpen]="openChat"
+                [assistInitialPos]="assistBtnPos"
+                (showChatPane)="showChatPane()"
+              ></app-aipopup>
+            </div>
+
+            <div
+              *ngIf="openChat"
+              class="ai-chat-container"
+              style="width: 35%; float: right; height: calc(100vh - 53px); position: relative; display: block;"
+            >
+              <ejs-aiassistview
+                #assistInstance
+                cssClass="e-aiassist-chat"
+                promptPlaceholder="Type a question"
+                [promptSuggestions]="aiSuggestions"
+                promptIconCss="e-icons e-aiassist-chat-icon"
+                responseIconCss="e-icons e-aiassist-chat-icon"
+                (created)="chatPanelCreated()"
+                [toolbarSettings]="{
+                  items: [{ iconCss: 'e-icons e-close', align: 'Right', tooltipText: 'Close' }]
+                }"
+                [bannerTemplate]="bannerTemplate"
+                (promptRequest)="promptRequest($event)"
+                [responseToolbarSettings]="{
+                  items: [
+                    { iconCss: 'e-icons e-copy', tooltip: 'copy' },
+                    { iconCss: 'e-btn-icon e-de-ctnr-new', tooltip: 'insert' }
+                  ],
+                  itemClicked: responseToolbarItemClicked($event)
+                }"
+              >
+                <e-views>
+                  <e-view header="AI Assistant" iconCss="e-icons e-aiassist-chat-header"></e-view>
+                </e-views>
+              </ejs-aiassistview>
+
+              <ng-template #bannerTemplate>
+                <div class="ai-assist-banner">
+                  <div class="e-icons e-aiassist-page-icon"></div>
+                  <div class="e-aiassist-page-header">How can I help you?</div>
+                </div>
+              </ng-template>
+            </div>
+          </div>
+        </div>
+      </ng-template>
+    </div>
+  </div>
+</div>
