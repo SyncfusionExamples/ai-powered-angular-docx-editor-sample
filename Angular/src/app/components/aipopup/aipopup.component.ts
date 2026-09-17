@@ -127,7 +127,8 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
         this.fabChatVisible = false;
       } else {
         this.fabAssistVisible = true;
-        this.fabChatVisible = !this.chatOpen;
+        // Chat FAB is hidden from the sample — kept in code but not shown.
+        this.fabChatVisible = false;
       }
       if (this.assistFab) {
         this.assistFab.visible = this.fabAssistVisible;
@@ -139,9 +140,9 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       }
     }
     if (changes['chatOpen'] && this.chatFab) {
-      this.fabChatVisible = this.isAIEnabled ? !this.chatOpen : false;
-      this.chatFab.visible = this.fabChatVisible;
-      if (!this.chatOpen) requestAnimationFrame(() => this.positionChatFabByHelper());
+      // Chat FAB is hidden from the sample — keep it always invisible.
+      this.fabChatVisible = false;
+      this.chatFab.visible = false;
     }
     if (changes['assistInitialPos'] && this.assistInitialPos) {
       this.assistBtn = {

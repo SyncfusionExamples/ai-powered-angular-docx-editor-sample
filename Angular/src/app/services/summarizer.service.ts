@@ -21,14 +21,28 @@ export class SummarizerService {
   }
 
   async getDocumentText(editorRef: any): Promise<string> {
-    const de = editorRef.documentEditor;
+    const de = editorRef?.documentEditor;
+    if (!de || !de.selection) {
+      return '';
+    }
     const sel = de.selection;
-    const start = sel.startOffset;
-    const end = sel?.endOffset;
-    de.selection.selectAll();
+    let start: any;
+    let end: any;
+    try {
+      start = sel.startOffset;
+      end = sel.endOffset;
+    } catch {
+      start = null;
+      end = null;
+    }
+    try {
+      de.selection.selectAll();
+    } catch {}
     const text = de.selection.text;
-    de.selection.select(start, end);
-    return text;
+    try {
+      if (start != null && end != null) de.selection.select(start, end);
+    } catch {}
+    return text || '';
   }
 
   async getDocumentSummary(editorRef: any): Promise<string> {
