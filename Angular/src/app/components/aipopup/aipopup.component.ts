@@ -988,7 +988,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       http.onreadystatechange = () => {
         if (http.readyState === 4) {
           if (http.status === 200 || http.status === 304) {
-            editor.editor.paste(http.responseText, 'MergeWithExistingFormatting');
+            editor.editor.paste(http.responseText, 'KeepSourceFormatting');
           } else {
             alert('Replace failed: ' + http.status);
           }
