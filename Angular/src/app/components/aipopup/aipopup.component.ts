@@ -92,6 +92,11 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
    *  runTask body executes. This holds the HTML captured at click time so
    *  runTask uses it instead of re-reading a possibly-empty selection. */
   private capturedSelectionHtml: string | null = null;
+  /** Remembers the source text of the current smart-editor task so that
+   *  re-runs (Translate language change, Regenerate) — which occur after the
+   *  editor selection has been lost to the open dialog — can reuse it instead
+   *  of reading an empty selection and bailing out. */
+  private lastSourceText: string | null = null;
 
   // widget references
   private chatFab!: Fab;
@@ -207,7 +212,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       header: this.smartHeaderHtml(),
       content: this.getSmartContentHtml(),
       footerTemplate: this.smartFooterHtml(),
-      close: () => this.zone.run(() => { this.smartVisible = false; })
+      close: () => this.zone.run(() => { this.smartVisible = false; this.lastSourceText = null; })
     } as any);
     this.smartDialog.appendTo(smartDiv);
     this.buildSmartPaneInputs();
@@ -687,7 +692,20 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
         // to a live read for the Generate / legacy paths.
         sourceText = this.capturedSelectionHtml ?? this.getSelectionText();
         this.capturedSelectionHtml = null;
+        // If we still have no text (e.g. the editor selection was lost to the
+        // open dialog during a Translate language-change / Regenerate),
+        // reuse the source text from the current task.
+        if ((!sourceText || sourceText.trim().length < 3) && this.lastSourceText) {
+          sourceText = this.lastSourceText;
+        }
         if (!sourceText || sourceText.trim().length < 3) { this.isLoading = false; return; }
+        // Remember it for subsequent re-runs in this dialog session.
+        this.lastSourceText = sourceText;
+        // Note: the spinner is shown by runMenuTask (context-menu path) and
+        // changeLanguage (re-translate path). We do NOT call showSpinner here
+        // because ej2's showSpinner/hideSpinner are NOT idempotent — calling
+        // showSpinner twice needs two hideSpinner calls, and the spinner would
+        // never disappear (covering the translated/rephrased output).
         if (task === AiTask.Rephrase) {
           const userHint = isRegenerate ? '' : (this.userPrompt?.trim() || '');
           for (let i = 0; i < 3; i++) {
@@ -793,6 +811,13 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
 
   changeLanguage(e: any): void {
     this.translateTo = e.value;
+    // Re-translate uses the captured/remembered source text (the editor
+    // selection is gone while the dialog is open). Show the spinner explicitly
+    // here because changeLanguage calls runTask directly, bypassing runMenuTask
+    // (which is the other place showSpinner is called for the smart-editor
+    // path). runTask's end will call hideSpinner to reveal the new translation.
+    const sc = this.getActiveSpinner();
+    if (sc) showSpinner(sc);
     setTimeout(() => this.runTask(AiTask.Translate, false, e.value), 100);
   }
 
