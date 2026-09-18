@@ -46,11 +46,9 @@ export class AppComponent implements OnInit, OnDestroy {
   openChat = false;
   isAIEnabled = false;
   documentName = 'New Document';
-  assistBtnPos = { left: 80, top: 160, width: 24, height: 24 };
   aiSuggestions: string[] = ['Summarize this document'];
 
   private titleBar: any;
-  private resizeHandler = () => this.onZoomFactorChange();
 
   SERVICE_URL = SERVICE_URL;
   UPLOADER_SAVE_URL = UPLOADER_SAVE_URL;
@@ -61,27 +59,7 @@ export class AppComponent implements OnInit, OnDestroy {
   }
 
   ngOnDestroy(): void {
-    window.removeEventListener('resize', this.resizeHandler);
     try { this.titleBar?.destroy?.(); } catch {}
-  }
-
-  onZoomFactorChange(): void {
-    const editor = this.containerRef?.documentEditor;
-    if (!editor) return;
-    setTimeout(() => {
-      editor.focusIn();
-      const zoom = editor.zoomFactor;
-      const pos = (window as any).getAIAssistBtnPosition?.();
-      if (pos) {
-        this.assistBtnPos = {
-          left: Math.round(pos.x),
-          top: Math.round(pos.y),
-          width: Math.round(24 * zoom),
-          height: Math.round(24 * zoom)
-        };
-      }
-      (window as any).setAIAssistBtnIconSize?.(Math.round(14 * zoom));
-    }, 10);
   }
 
   onContainerCreated(): void {
@@ -97,21 +75,7 @@ export class AppComponent implements OnInit, OnDestroy {
     // in this same tick so Angular doesn't throw NG0100 on the next CD pass.
     this.cdr.detectChanges();
     try { editor.focusIn(); } catch {}
-    setTimeout(() => {
-      try {
-        const pos = (window as any).getAIAssistBtnPosition?.();
-        if (pos) {
-          this.assistBtnPos = {
-            left: Math.round(pos.x),
-            top: Math.round(pos.y),
-            width: 24,
-            height: 24
-          };
-        }
-      } catch {}
-    }, 10);
     (window as any).onbeforeunload = () => 'Want to save your changes?';
-    editor.zoomFactorChange = () => this.onZoomFactorChange();
     editor.pageOutline = '#E0E0E0';
     editor.acceptTab = true;
     this.containerRef.documentEditorSettings.showRuler = true;
@@ -125,8 +89,6 @@ export class AppComponent implements OnInit, OnDestroy {
       (checked: boolean) => this.zone.run(() => this.setIsAIEnabled(checked))
     );
     this.onLoadDefault();
-    
-    window.addEventListener('resize', this.resizeHandler);
   }
 
   private setIsAIEnabled(checked: boolean): void {

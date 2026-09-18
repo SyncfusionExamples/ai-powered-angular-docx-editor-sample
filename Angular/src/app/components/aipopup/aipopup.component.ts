@@ -57,7 +57,6 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
   @Input() editorRef: any;
   @Input() isAIEnabled = false;
   @Input() chatOpen = false;
-  @Input() assistInitialPos: any;
   @Output() showChatPane = new EventEmitter<void>();
 
   @ViewChild('host', { static: true }) hostRef!: ElementRef<HTMLElement>;
@@ -86,14 +85,20 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
   canceled = false;
   genVisible = false;
   smartVisible = false;
-  viewerHost: HTMLElement | null = null;
   fabChatVisible = false;
-  fabAssistVisible = false;
-  assistBtn = { left: 80, top: 160, width: 24, height: 24, visible: true };
   aiResults: string[] = [];
+  /** When the smart-editor task is launched from the editor's native context
+   *  menu, the editor selection may be cleared by the time the zone-deferred
+   *  runTask body executes. This holds the HTML captured at click time so
+   *  runTask uses it instead of re-reading a possibly-empty selection. */
+  private capturedSelectionHtml: string | null = null;
+  /** Remembers the source text of the current smart-editor task so that
+   *  re-runs (Translate language change, Regenerate) — which occur after the
+   *  editor selection has been lost to the open dialog — can reuse it instead
+   *  of reading an empty selection and bailing out. */
+  private lastSourceText: string | null = null;
 
   // widget references
-  private assistFab!: Fab;
   private chatFab!: Fab;
   private genDialog!: Dialog;
   private smartDialog!: Dialog;
@@ -116,27 +121,17 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
 
   ngOnInit(): void {
     this.buildWidgets();
-    this.startViewerPick();
     createSpinner({ target: this.hostRef.nativeElement.querySelector('#spinner-container') as HTMLElement });
   }
 
   ngOnChanges(changes: SimpleChanges): void {
     if (changes['isAIEnabled']) {
-      if (!this.isAIEnabled) {
-        this.fabAssistVisible = false;
-        this.fabChatVisible = false;
-      } else {
-        this.fabAssistVisible = true;
-        // Chat FAB is hidden from the sample — kept in code but not shown.
-        this.fabChatVisible = false;
-      }
-      if (this.assistFab) {
-        this.assistFab.visible = this.fabAssistVisible;
-        this.updateFabPosition();
-      }
+      // The assist FAB has been removed; Rephrase/Translate/Grammar now live
+      // in the editor's native context menu (installEditorContextMenu). The
+      // chat FAB stays hidden from this sample.
+      this.fabChatVisible = false;
       if (this.chatFab) {
         this.chatFab.visible = this.fabChatVisible;
-        if (this.fabChatVisible) requestAnimationFrame(() => this.positionChatFabByHelper());
       }
     }
     if (changes['chatOpen'] && this.chatFab) {
@@ -144,35 +139,18 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       this.fabChatVisible = false;
       this.chatFab.visible = false;
     }
-    if (changes['assistInitialPos'] && this.assistInitialPos) {
-      this.assistBtn = {
-        left: this.assistInitialPos.left ?? this.assistBtn.left,
-        top: this.assistInitialPos.top ?? this.assistBtn.top,
-        width: this.assistInitialPos.width ?? this.assistBtn.width,
-        height: this.assistInitialPos.height ?? this.assistBtn.height,
-        visible: true
-      };
-      if (!this.isAIEnabled) { this.fabAssistVisible = false; this.fabChatVisible = false; }
-      this.updateFabPosition();
-    }
-    // React re-runs its selectionChange useEffect whenever editorRef changes.
-    // The viewer polling may find #documentEditorDiv before the parent's
-    // @ViewChild('container') resolves, so editorRef can be undefined the
-    // first time onViewerHostChanged runs. Reset the flag so the polling
-    // interval can re-install the hook once documentEditor is available.
-    // Defer to avoid NG0100 (ExpressionChangedAfterItHasBeenCheckedError)
-    // when containerRef changes from undefined to the component instance.
+    // When editorRef resolves, install our Rephrase/Translate/Grammar items
+    // into the Document Editor's native context menu. This is the
+    // page-agnostic replacement for the old cursor-following assist FAB.
     if (changes['editorRef']) {
-      this.selectionChangeHooked = false;
-      setTimeout(() => this.hookSelectionChange(), 0);
+      setTimeout(() => this.installEditorContextMenu(), 0);
     }
   }
 
   ngOnDestroy(): void {
-    [this.assistFab, this.chatFab, this.genDialog, this.smartDialog, this.stopDialog,
+    [this.chatFab, this.genDialog, this.smartDialog, this.stopDialog,
      this.assistMenu, this.settingsMenu, this.settingsBtn, this.gearHeaderBtn,
      this.textbox, this.translateComboBox, this.grammarMultiSelect].forEach(w => { try { w?.destroy?.(); } catch {} });
-    if (this.viewerPickInterval) clearInterval(this.viewerPickInterval);
     if (this.assistMenuHost?.parentNode) this.assistMenuHost.parentNode.removeChild(this.assistMenuHost);
     if (this.onOutsidePress) {
       document.removeEventListener('pointerdown', this.onOutsidePress, true);
@@ -184,28 +162,10 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
   private buildWidgets(): void {
     const host = this.hostRef.nativeElement;
 
-    // assist FAB
-    const fabAssistEl = document.createElement('button');
-    fabAssistEl.id = 'ai-assist-fab';
-    host.appendChild(fabAssistEl);
-    this.assistFab = new Fab({
-      cssClass: 'ai-assist-btn',
-      iconCss: 'e-icons e-ai-assist-btn',
-      visible: this.fabAssistVisible
-    } as any);
-    this.assistFab.appendTo(fabAssistEl);
-    fabAssistEl.title = 'Generate new content';
-    fabAssistEl.addEventListener('mousedown', (e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); });
-    fabAssistEl.addEventListener('click', (e: MouseEvent) => {
-      // Stop the click from bubbling to document — Syncfusion's ContextMenu
-      // listens at the document level and would otherwise close the menu we
-      // are about to open below.
-      e.preventDefault();
-      e.stopPropagation();
-      this.zone.run(() => this.openAssistMenu(e));
-    });
-    this.updateFabPosition();
-    console.log('[AIPopup] assist FAB created', { element: fabAssistEl, classList: Array.from(fabAssistEl.classList) });
+    // The assist FAB (cursor-following "Generate" button) has been removed.
+    // Rephrase / Translate / Grammar are now offered through the Document
+    // Editor's native context menu (see installEditorContextMenu), which
+    // works on every page. The chat FAB below remains for Q&A / summaries.
 
     // chat FAB
     const fabChatEl = document.createElement('button');
@@ -252,7 +212,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       header: this.smartHeaderHtml(),
       content: this.getSmartContentHtml(),
       footerTemplate: this.smartFooterHtml(),
-      close: () => this.zone.run(() => { this.smartVisible = false; })
+      close: () => this.zone.run(() => { this.smartVisible = false; this.lastSourceText = null; })
     } as any);
     this.smartDialog.appendTo(smartDiv);
     this.buildSmartPaneInputs();
@@ -317,14 +277,14 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     host.appendChild(spinner);
   }
 
-  private updateFabPosition(): void {
-    const el = this.assistFab?.element;
-    if (!el) return;
-    el.style.position = 'absolute';
-    el.style.left = `${this.assistBtn.left}px`;
-    el.style.top = `${this.assistBtn.top}px`;
-    el.style.width = `${this.assistBtn.width}px`;
-    el.style.height = `${this.assistBtn.height}px`;
+  /** Resolve the spinner target that is currently visible — prefers the one
+   *  inside the smart dialog (when the dialog is open) so the spinner
+   *  actually appears over the dialog content, not on the hidden host. */
+  private getActiveSpinner(): HTMLElement | null {
+    const dlgEl = this.smartDialog?.element;
+    const inDialog = dlgEl?.querySelector('#smart-spinner-container') as HTMLElement | null;
+    if (inDialog && this.smartVisible) return inDialog;
+    return document.getElementById('spinner-container');
   }
 
   private buildGenerateInputs(): void {
@@ -437,7 +397,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private getSmartContentHtml(): string {
-    return `<div class="ai-dialog-body"><div class="ai-splitter smart-splitter"><div class="pane-content"><div class="pane-content-header"><label class="translate-label smart-from-label"></label></div><div class="pane-text-area smart-in-html" style="height:280px;border:1px solid #ccc;padding:6px 10px;overflow-y:auto;"></div></div><div class="pane-content"><div class="pane-content-header"><label class="translate-label smart-to-label"></label><span class="smart-translate-combo" style="margin-left:8px"></span><span class="smart-grammar-multiselect" style="margin-left:8px"></span></div><div id="e-de-editableDiv" class="pane-text-area smart-out-html" style="height:280px;border:1px solid #ccc;padding:6px 10px;overflow-y:auto;"></div></div></div><div id="spinner-container" class="spinner-target"></div></div>`;
+    return `<div class="ai-dialog-body"><div class="ai-splitter smart-splitter"><div class="pane-content"><div class="pane-content-header"><label class="translate-label smart-from-label"></label></div><div class="pane-text-area smart-in-html" style="height:280px;border:1px solid #ccc;padding:6px 10px;overflow-y:auto;"></div></div><div class="pane-content"><div class="pane-content-header"><label class="translate-label smart-to-label"></label><span class="smart-translate-combo" style="margin-left:8px"></span><span class="smart-grammar-multiselect" style="margin-left:8px"></span></div><div id="e-de-editableDiv" class="pane-text-area smart-out-html" style="height:280px;border:1px solid #ccc;padding:6px 10px;overflow-y:auto;"></div></div></div><div id="smart-spinner-container" class="spinner-target"></div></div>`;
   }
 
   private smartFooterHtml(): string {
@@ -533,6 +493,14 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     // the footer DOM only exists after the dialog has been shown.  React wires
     // these via the smartFooterTemplate callback (which re-renders each time);
     // we re-wire here on every refresh to keep handlers bound to current state.
+    // Also ensure the dialog-local spinner is initialized (Dialog renders its
+    // content template lazily, so #smart-spinner-container only exists after
+    // the dialog has been shown once).
+    const smartSpinner = dlgEl.querySelector('#smart-spinner-container') as HTMLElement | null;
+    if (smartSpinner && !smartSpinner.dataset.spinnerInit) {
+      smartSpinner.dataset.spinnerInit = '1';
+      try { createSpinner({ target: smartSpinner }); } catch {}
+    }
     this.wireSmartFooterButtons(dlgEl);
   }
 
@@ -550,7 +518,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
       // Mirror React: show spinner, then regenerate with a short delay so the
       // spinner is visible before the async AI call begins.
       regenBtn.addEventListener('click', () => this.zone.run(() => {
-        const sc = document.getElementById('spinner-container');
+        const sc = this.getActiveSpinner();
         if (sc) showSpinner(sc);
         setTimeout(() => this.runTask(this.popupType, true), 10);
       }));
@@ -720,8 +688,24 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
           this.insertContent(out);
         }, 1000);
       } else {
-        sourceText = this.getSelectionText();
+        // Prefer the selection captured at context-menu click time; fall back
+        // to a live read for the Generate / legacy paths.
+        sourceText = this.capturedSelectionHtml ?? this.getSelectionText();
+        this.capturedSelectionHtml = null;
+        // If we still have no text (e.g. the editor selection was lost to the
+        // open dialog during a Translate language-change / Regenerate),
+        // reuse the source text from the current task.
+        if ((!sourceText || sourceText.trim().length < 3) && this.lastSourceText) {
+          sourceText = this.lastSourceText;
+        }
         if (!sourceText || sourceText.trim().length < 3) { this.isLoading = false; return; }
+        // Remember it for subsequent re-runs in this dialog session.
+        this.lastSourceText = sourceText;
+        // Note: the spinner is shown by runMenuTask (context-menu path) and
+        // changeLanguage (re-translate path). We do NOT call showSpinner here
+        // because ej2's showSpinner/hideSpinner are NOT idempotent — calling
+        // showSpinner twice needs two hideSpinner calls, and the spinner would
+        // never disappear (covering the translated/rephrased output).
         if (task === AiTask.Rephrase) {
           const userHint = isRegenerate ? '' : (this.userPrompt?.trim() || '');
           for (let i = 0; i < 3; i++) {
@@ -746,7 +730,7 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
         this.suggestions = this.aiResults;
         this.currentIndex = 0;
         this.refreshSmartDialogContent();
-        const sc = document.getElementById('spinner-container');
+        const sc = this.getActiveSpinner();
         if (sc) hideSpinner(sc);
       }
     } catch (e: any) {
@@ -788,108 +772,16 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
 
   // ---------- events ----------
   onMenuSelect(args: MenuEventArgs): void {
-    console.log('[AIPopup] onMenuSelect fired', { item: args.item });
     const sel = args.item?.text;
-    const action = sel === 'Rephrase' ? AiTask.Rephrase : (sel === 'Translate' ? AiTask.Translate : AiTask.Grammar);
     if (!sel) return;
-    this.popupType = action;
-    this.suggestions = []; this.currentIndex = 0; this.userPrompt = '';
-    this.isSmartEditor = true;
-    this.inHtml = `<p>${this.getSelectionText()}</p>`;
-    this.outHtml = '';
-    const sc = document.getElementById('spinner-container');
-    if (sc) showSpinner(sc);
-    this.smartVisible = true;
-    this.smartDialog.show();
-    this.refreshSmartDialogContent();
-    setTimeout(() => this.runTask(action), 100);
-  }
-
-  openAssistMenu(ev: any): void {
-    console.log('[AIPopup] openAssistMenu fired', { ev, editorRef: this.editorRef });
-    ev?.preventDefault?.();
-    ev?.stopPropagation?.();
-
-    // Preserve the editor selection: clicking the FAB can blur the editor and
-    // the underlying DocumentEditor may clear its selection before this handler
-    // reads it. Re-focus the editor (no-op if already focused) before reading.
-    try {
-      this.editorRef?.documentEditor?.focusIn?.();
-    } catch {}
-
-    const sel = this.getSelectionText();
-    console.log('[AIPopup] selection html =', JSON.stringify(sel));
-    if (!sel) {
-      console.log('[AIPopup] no selection → opening Generate dialog');
-      if (this.stopVisible) { console.log('[AIPopup] stopVisible=true, bail'); return; }
-      this.popupType = AiTask.Generate;
-      this.isSmartEditor = false;
-      this.inHtml = ''; this.outHtml = ''; this.userPrompt = ''; this.suggestions = [];
-      const pos = (window as any).getAIAssistPopupPosition ? (window as any).getAIAssistPopupPosition() : null;
-      console.log('[AIPopup] getAIAssistPopupPosition =', pos);
-      const posVal = pos || { x: 200, y: 160 };
-      this.dialogPos = { x: String(Math.round(posVal.x)), y: String(Math.round(posVal.y)) };
-      this.genDialog.position = { X: this.dialogPos.x, Y: this.dialogPos.y } as any;
-      this.genVisible = true;
-      this.genDialog.show();
-      requestAnimationFrame(() => (this.genDialog as any).refreshPosition?.());
-      this.wireGenOutsidePress();
-      return;
-    }
-    console.log('[AIPopup] selection present → attempting to open Rephrase/Translate/Grammar menu');
-    if (this.genVisible || this.stopVisible) {
-      console.log('[AIPopup] bail: genVisible/stopVisible', { genVisible: this.genVisible, stopVisible: this.stopVisible });
-      return;
-    }
-    const aiPos = (window as any).getAIButtonPosition ? (window as any).getAIButtonPosition() : null;
-    console.log('[AIPopup] getAIButtonPosition =', aiPos, '| assistMenu =', !!this.assistMenu, '| open fn =', typeof (this.assistMenu as any)?.open);
-    if (aiPos && (this.assistMenu as any).open) {
-      console.log('[AIPopup] calling assistMenu.open(y, x) with primary coords', { y: Math.round(aiPos.y), x: Math.round(aiPos.x + 24) });
-      this.assistMenu.open(Math.round(aiPos.y), Math.round(aiPos.x + 24));
-      this.dumpMenuState('primary');
-      return;
-    }
-    const r = (this.assistFab?.element as HTMLElement)?.getBoundingClientRect();
-    console.log('[AIPopup] fallback → assistFab rect =', r);
-    if (r) {
-      // ContextMenu.open(top, left) expects (y, x) order.
-      const top = Math.round(r.top + (window as any).scrollY);
-      const left = Math.round(r.left + (window as any).scrollX + 24);
-      console.log('[AIPopup] calling assistMenu.open(y, x) with fallback coords', { top, left, scrollY: (window as any).scrollY, scrollX: (window as any).scrollX });
-      this.assistMenu.open(top, left);
-      this.dumpMenuState('fallback');
-    } else {
-      console.log('[AIPopup] ✗ no FAB rect available — menu will NOT open');
-    }
-  }
-
-  /** Logs the rendered ContextMenu popup state for diagnostics. */
-  private dumpMenuState(tag: string): void {
-    setTimeout(() => {
-      const popups = document.querySelectorAll('ul.e-contextmenu, .e-contextmenu-wrapper, .e-menu-wrapper');
-      console.log(`[AIPopup] dumpMenuState(${tag}) → found ${popups.length} contextmenu popup(s)`);
-      popups.forEach((p, i) => {
-        const el = p as HTMLElement;
-        const cs = window.getComputedStyle(el);
-        console.log(`[AIPopup] popup[${i}]`, {
-          display: cs.display,
-          visibility: cs.visibility,
-          opacity: cs.opacity,
-          position: cs.position,
-          top: cs.top,
-          left: cs.left,
-          zIndex: cs.zIndex,
-          offsetParent: el.offsetParent?.tagName,
-          childCount: el.querySelectorAll('li.e-menu-item').length,
-          outerHTML: el.outerHTML.slice(0, 200)
-        });
-      });
-    }, 50);
+    this.zone.run(() => this.runMenuTask(
+      sel === 'Rephrase' ? AiTask.Rephrase :
+      sel === 'Translate' ? AiTask.Translate : AiTask.Grammar
+    ));
   }
 
   openChat(): void {
     document.querySelector('.e-ribbon-help-template')?.classList.add('e-hide');
-    document.querySelector('.e-fab.ai-assist-btn')?.classList.add('e-hide');
     document.querySelector('.document-editor-container')?.classList.add('e-hide');
     this.fabChatVisible = false;
     if (this.chatFab) this.chatFab.visible = false;
@@ -919,6 +811,13 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
 
   changeLanguage(e: any): void {
     this.translateTo = e.value;
+    // Re-translate uses the captured/remembered source text (the editor
+    // selection is gone while the dialog is open). Show the spinner explicitly
+    // here because changeLanguage calls runTask directly, bypassing runMenuTask
+    // (which is the other place showSpinner is called for the smart-editor
+    // path). runTask's end will call hideSpinner to reveal the new translation.
+    const sc = this.getActiveSpinner();
+    if (sc) showSpinner(sc);
     setTimeout(() => this.runTask(AiTask.Translate, false, e.value), 100);
   }
 
@@ -1051,136 +950,151 @@ export class AIPopupComponent implements OnInit, OnChanges, OnDestroy {
     }
   }
 
-  // ---------- viewer pick + FAB positioning ----------
-  private viewerPickInterval: any;
-  private viewerTracked = false;
-  private mouseTracking = false;
-  private selectionChangeHooked = false;
-
-  private startViewerPick(): void {
-    const pick = () => {
-      const el = document.querySelector('#document-editor #documentEditorDiv') as HTMLElement;
-      if (el && el !== this.viewerHost) {
-        this.viewerHost = el;
-        this.onViewerHostChanged(el);
-      }
-      // The editorRef (DocumentEditorContainerComponent) is set early, but its
-      // internal documentEditor is only created after the container's
-      // 'created' event. Keep trying until documentEditor is available, then
-      // install the selectionChange hook. React achieves this via a useEffect
-      // with dependency [editorRef, viewerHost] that re-runs when either
-      // changes; Angular has no equivalent re-trigger, so we poll here.
-      if (this.editorRef?.documentEditor && !this.selectionChangeHooked) {
-        this.hookSelectionChange();
-      }
+  // ---------- AI task trigger from the editor's native context menu ----------
+  /**
+   * Called by the parent AppComponent when the user selects the
+   * "Rephrase", "Translate", or "Grammar" item that has been added to the
+   * Document Editor's context menu (via `contextMenu.addCustomMenu`).
+   *
+   * This is the page-agnostic replacement for the old cursor-following FAB:
+   * the native context menu opens at whatever page the user right-clicks on,
+   * so Rephrase/Translate/Grammar work on every page, not just the first one.
+   *
+   * `action` is one of 'Rephrase' | 'Translate' | 'Grammar'. The editor
+   * selection is preserved — the menu appears on a right-click, so the
+   * selection is always present by the time this runs.
+   */
+  triggerAIAction(action: 'Rephrase' | 'Translate' | 'Grammar', capturedSelectionHtml?: string): void {
+    // Reuse the existing menu-select path so the smart-editor dialog,
+    // spinner, suggestion list and Replace flow stay identical.
+    const map: Record<string, string> = {
+      'Rephrase': AiTask.Rephrase,
+      'Translate': AiTask.Translate,
+      'Grammar': AiTask.Grammar
     };
-    pick();
-    this.viewerPickInterval = setInterval(pick, 300);
-    window.addEventListener('resize', () => pick());
+    const task = map[action];
+    if (!task) return;
+    this.zone.run(() => this.runMenuTask(task, capturedSelectionHtml));
   }
 
-  private onViewerHostChanged(el: HTMLElement): void {
-    console.log('[AIPopup] onViewerHostChanged → viewer element found', { el, editorRef: this.editorRef });
-    // Position the assist FAB initially once the viewer is available.
-    this.positionAssistFabInitial();
-
-    // Install the selectionChange hook (also re-installed from ngOnChanges
-    // when editorRef resolves). React assigns unconditionally — no guard on
-    // ed.selectionChange being already defined.
-    this.hookSelectionChange();
-
-    if (this.viewerTracked) { console.log('[AIPopup] viewer already tracked, skipping listener attach'); return; }
-    this.viewerTracked = true;
-
-    // React: useEffect for mousedown/mouseup tracking on the viewer element.
-    el.addEventListener('mousedown', (e: MouseEvent) => this.zone.runOutsideAngular(() => this.onViewerMouseDown(e)), false);
-    el.addEventListener('mouseup', (e: MouseEvent) => this.zone.runOutsideAngular(() => this.onViewerMouseUp(e)), false);
-    console.log('[AIPopup] attached mousedown/mouseup on viewer');
+  /** Shared entry point for both the legacy FAB-click menu item and the new
+   *  editor custom-context-menu item.  Kept separate from onMenuSelect so
+   *  the existing Syncfusion ContextMenu (Rephrase/Translate/Grammar) can
+   *  keep working unchanged.
+   *  `capturedSelectionHtml` lets callers (the editor context menu) pass in
+   *  the HTML captured at click time so the task runs even if the editor
+   *  selection has been cleared by the time the zone-deferred body executes. */
+  private runMenuTask(task: string, capturedSelectionHtml?: string): void {
+    const action: 'Rephrase' | 'Translate' | 'Grammar' =
+      task === AiTask.Rephrase ? 'Rephrase' :
+      task === AiTask.Translate ? 'Translate' : 'Grammar';
+    // Use the captured selection if provided; otherwise read it live (used by
+    // the legacy FAB-path ContextMenu where selection is still intact).
+    const selHtml = (capturedSelectionHtml !== undefined)
+      ? capturedSelectionHtml
+      : this.getSelectionText();
+    // Stash it so runTask (which may run after the editor has refocused and
+    // cleared the selection) reads the same text we captured at click time.
+    this.capturedSelectionHtml = selHtml;
+    this.popupType = task;
+    this.suggestions = []; this.currentIndex = 0; this.userPrompt = '';
+    this.isSmartEditor = true;
+    this.inHtml = `<p>${selHtml}</p>`;
+    this.outHtml = '';
+    // Show the dialog BEFORE touching the spinner — the spinner target
+    // (#smart-spinner-container) lives inside the dialog's content template,
+    // which Syncfusion renders lazily on .show(). refreshSmartDialogContent
+    // (called next) initializes the spinner; only then can we show it.
+    this.smartVisible = true;
+    this.smartDialog.show();
+    this.refreshSmartDialogContent();
+    const sc = this.getActiveSpinner();
+    if (sc) showSpinner(sc);
+    try { this.editorRef?.documentEditor?.focusIn?.(); } catch {}
+    setTimeout(() => this.runTask(action as any), 100);
   }
 
-  /** Install (or re-install) the editor selectionChange hook so the FAB
-   *  follows the cursor. Mirrors React's useEffect([editorRef, viewerHost]).
-   *  Safe to call repeatedly — React assigns unconditionally (no guard). */
-  private hookSelectionChange(): void {
-    try {
-      const ed = this.editorRef?.documentEditor;
-      if (ed) {
-        ed.selectionChange = () => this.zone.run(() => this.onSelectionChange());
-        this.selectionChangeHooked = true;
-        console.log('[AIPopup] selectionChange hook installed');
+  /** Wire the editor's native custom context menu (Rephrase / Translate /
+   *  Grammar).  The items are shown only when AI is enabled and there is a
+   *  non-empty selection; otherwise they are hidden via
+   *  `customContextMenuBeforeOpen`.  Safe to call more than once — addCustomMenu
+   *  is idempotent per id combination in practice, so we guard with a flag. */
+  private contextMenuInstalled = false;
+  private contextMenuRetry = 0;
+  installEditorContextMenu(): void {
+    const ed = this.editorRef?.documentEditor;
+    if (!ed?.contextMenu?.addCustomMenu) {
+      // documentEditor is created asynchronously after the container's
+      // 'created' event; retry a few times until it is available.
+      if (this.contextMenuRetry++ < 40) {
+        setTimeout(() => this.installEditorContextMenu(), 100);
       }
-    } catch {}
-  }
+      return;
+    }
+    if (this.contextMenuInstalled) return;
+    this.contextMenuInstalled = true;
 
-  private onSelectionChange(): void {
-    try {
-      const pos = (window as any).getAIAssistBtnPosition?.();
-      if (pos) {
-        this.assistBtn = {
-          ...this.assistBtn,
-          left: Math.round(pos.x),
-          top: Math.round(pos.y)
-        };
-        this.updateFabPosition();
-      }
-    } catch {}
-  }
+    // Syncfusion's Document Editor automatically prefixes custom context-menu
+    // item ids with its own element.id — see the "Customize Context Menu"
+    // sample (https://help.syncfusion.com/.../customize-context-menu):
+    //   items are created with { id: 'search_in_google' } (no prefix), but
+    //   customContextMenuSelect receives args.id === edId + 'search_in_google'.
+    // So we set the ids WITHOUT the edId prefix here, and build the expected
+    // ids as edId + 'ai_...' when comparing in the handlers below.
+    const edId: string = ed.element?.id || '';
 
-  private onViewerMouseDown(_e: MouseEvent): void {
-    this.mouseTracking = true;
-    try {
-      const sel = this.editorRef?.documentEditor?.selection?.text || '';
-      if (sel && this.isSmartEditor) {
-        this.zone.run(() => { this.isSmartEditor = false; });
-      }
-    } catch {}
-  }
+    const menuItems = [
+      { text: 'Rephrase', id: 'ai_rephrase', iconCss: 'e-icons e-rephrase' },
+      { text: 'Translate', id: 'ai_translate', iconCss: 'e-icons e-translate' },
+      { text: 'Grammar',  id: 'ai_grammar',  iconCss: 'e-icons e-grammar-check' }
+    ];
 
-  private onViewerMouseUp(_e: MouseEvent): void {
-    if (!this.mouseTracking) return;
-    this.mouseTracking = false;
+    // Second arg = false → keep the default context menu items; our three items
+    // are appended below them.
+    ed.contextMenu.addCustomMenu(menuItems, false);
 
-    setTimeout(() => {
+    // Expected ids after Syncfusion prefixes them with edId.
+    const idRephrase = edId + 'ai_rephrase';
+    const idTranslate = edId + 'ai_translate';
+    const idGrammar = edId + 'ai_grammar';
+    const isAiItem = (id: string) => id === idRephrase || id === idTranslate || id === idGrammar;
+
+    // Show/hide our items depending on AI enabled state and selection.
+    ed.customContextMenuBeforeOpen = (args: any): void => {
       try {
-        const selText = this.editorRef?.documentEditor?.selection?.text || '';
-        console.log('[AIPopup] onViewerMouseUp → selection text =', JSON.stringify(selText), '| viewerHost =', !!this.viewerHost);
-        if (!!selText && selText.trim().length > 0) {
-          this.zone.run(() => {
-            this.isSmartEditor = true;
-            // Mirror React: set the FAB tooltip to indicate refine mode.
-            if (this.assistFab?.element) (this.assistFab.element as HTMLElement).title = 'Refine the content';
-          });
-        }
-
-        const pos = (window as any).getAIAssistBtnPosition?.();
-        console.log('[AIPopup] getAIAssistBtnPosition =', pos);
-        if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
-          this.zone.run(() => {
-            this.assistBtn = {
-              ...this.assistBtn,
-              left: Math.round(pos.x),
-              top: Math.round(pos.y)
-            };
-            this.updateFabPosition();
-          });
+        const ids: string[] = args?.ids || [];
+        const selText = (this.getSelectionText() || '').replace(/<[^>]+>/g, ' ').trim();
+        const enabled = this.isAIEnabled && selText.length > 0;
+        for (const id of ids) {
+          if (isAiItem(id)) {
+            // The <li> DOM element id is the prefixed id (same as args.id).
+            const li = document.getElementById(id);
+            if (li) li.style.display = enabled ? '' : 'none';
+          }
         }
       } catch {}
-    }, 10);
-  }
+    };
 
-  private positionAssistFabInitial(): void {
-    try {
-      const pos = (window as any).getAIAssistBtnPosition?.();
-      if (!pos) return;
-      this.assistBtn = {
-        ...this.assistBtn,
-        left: Math.round(pos.x),
-        top: Math.round(pos.y),
-        width: 24,
-        height: 24
-      };
-      this.updateFabPosition();
-    } catch {}
+    // Route the selected item to the existing smart-editor flow.
+    ed.customContextMenuSelect = (args: any): void => {
+      try {
+        const id: string = args?.id || '';
+        if (!isAiItem(id)) return;
+        if (!this.isAIEnabled) return;
+        // Capture the selection HTML *immediately* — the context menu is
+        // closing right now and the editor may refocus / clear the
+        // selection before any deferred zone callback reads it again.
+        const selHtml = this.getSelectionText();
+        const selPlain = (selHtml || '').replace(/<[^>]+>/g, ' ').trim();
+        if (selPlain.length === 0) return;
+        const action = id === idRephrase ? 'Rephrase'
+          : id === idTranslate ? 'Translate'
+          : id === idGrammar   ? 'Grammar'
+          : '';
+        if (action) this.triggerAIAction(action as any, selHtml);
+      } catch {}
+    };
+    console.log('[AIPopup] custom editor context menu installed (Rephrase/Translate/Grammar)', { edId, idRephrase, idTranslate, idGrammar });
   }
 
   private onChatFabCreated(): void {
